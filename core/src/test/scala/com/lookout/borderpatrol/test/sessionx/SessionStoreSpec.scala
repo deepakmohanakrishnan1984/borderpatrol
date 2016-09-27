@@ -45,13 +45,8 @@ class SessionStoreSpec extends BorderPatrolSuite {
       store.get[http.Request](reqSession.id).results.get.data.uri shouldEqual reqSession.data.uri
     }
 
-    it should s"return a Future exception when decoding to wrong type in $store" in {
-      // try to make an Session[Int] => Session[http.Request]
-      store.get[http.Request](intSession.id).isThrowable should be(true)
-
-      /* TODO: Disallow this: Int -> Buf -> String
-      isThrow(store.get[Int](strSession.id)) should be(false)
-      */
+    it should s"return a None when decoding to wrong type in $store" in {
+      store.get[http.Request](intSession.id).results should be(None)
     }
 
     it should s"delete stored values in $store" in {

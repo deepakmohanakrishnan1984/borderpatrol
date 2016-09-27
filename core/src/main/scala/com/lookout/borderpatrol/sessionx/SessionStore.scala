@@ -56,13 +56,14 @@ object SessionStores {
       store.get(key.asBase64).flatMap {
         case None =>
           log.info(s"Failed to find the Session data for SessionId: ${key.toLogIdString}")
-          Future.value(None)
+          None.toFuture
         case Some(buf) =>
           ev.decode(buf) match {
             case Failure(e) =>
-              log.info(s"Failed to decode the Session data for SessionId: ${key.toLogIdString}")
-              e.toFutureException[Option[Session[A]]]
-            case Success(data) => Some(Session(key, data)).toFuture
+              log.info(s"Failed to decode the Session data for SessionId: ${key.toLogIdString}, error: ${e.toString}")
+              None.toFuture
+            case Success(data) =>
+              Some(Session(key, data)).toFuture
           }
       }
 
@@ -93,7 +94,7 @@ object SessionStores {
     def get[A](key: SignedId)(implicit ev: SessionDataEncoder[A]): Future[Option[Session[A]]] =
       store.find(_.id == key) match {
         case Some(s) => ev.decode(s.data) match {
-          case Failure(e) => e.toFutureException[Option[Session[A]]]
+          case Failure(e) => None.toFuture
           case Success(data) => Some(Session(key, data)).toFuture
         }
         case _ => None.toFuture

@@ -74,10 +74,10 @@ class BorderAuthSpec extends BorderPatrolSuite {
     val sessionId = sessionid.authenticated
 
     // Create request
-    val s1 = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("/broken/umb")), true)
-    val s2 = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("/")), true)
-    val s3 = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("")), true)
-    val s4 = ServiceIdentifier("two", urls, Path("/umb"), None, true)
+    val s1 = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("/broken/umb")), Set.empty)
+    val s2 = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("/")), Set.empty)
+    val s3 = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("")), Set.empty)
+    val s4 = ServiceIdentifier("two", urls, Path("/umb"), None, Set.empty)
     val br1 = BorderRequest(req("umbrella", "/umb/some/weird/path"), cust2, s1, sessionId)
     val br2 = BorderRequest(req("umbrella", "/umb/some/weird/path"), cust2, s2, sessionId)
     val br3 = BorderRequest(req("umbrella", "/umb/some/weird/path"), cust2, s3, sessionId)
@@ -92,6 +92,46 @@ class BorderAuthSpec extends BorderPatrolSuite {
     BorderAuth.rewriteRequest(br31.req, br31.serviceId).path should be("/")
     BorderAuth.rewriteRequest(br32.req, br32.serviceId).path should be("/")
     BorderAuth.rewriteRequest(br4.req, br4.serviceId).path should be("/umb/some/weird/path")
+  }
+
+  behavior of "allocateUntaggedSession"
+
+  it should "allocate an untagged Sessionid and store it in the SessionStore" in {
+    // Request
+    val request = req("enterprise", "/ent")
+
+    //  Execute
+    val output = BorderAuth.allocateUntaggedSession(request, sessionStore)
+
+    // Validate
+    val sessionId = Await.result(output)
+    val reqZ = getRequestFromSessionId(sessionId)
+    sessionId.tag should be(Untagged)
+    Await.result(reqZ).uri should be(request.uri)
+  }
+
+  it should "propagate the Exception thrown by SessionStore.update operation" in {
+    //  Mock SessionStore client
+    case object FailingUpdateMockClient extends memcached.MockClient {
+      override def set(key: String, flags: Int, expiry: Time, value: Buf): Future[Unit] = {
+        Future.exception[Unit](new Exception("whoopsie"))
+      }
+    }
+
+    // Request
+    val request = req("enterprise", "/ent")
+
+    // Mock sessionStore
+    val mockSessionStore = MemcachedStore(FailingUpdateMockClient)
+
+    //  Execute
+    val output = BorderAuth.allocateUntaggedSession(request, mockSessionStore)
+
+    // Verify
+    val caught = the[Exception] thrownBy {
+      Await.result(output)
+    }
+    caught.getMessage should equal("whoopsie")
   }
 
   behavior of "CustomerIdFilter"
@@ -144,8 +184,8 @@ class BorderAuthSpec extends BorderPatrolSuite {
     //  test service
     val testService = Service.mk[SessionIdRequest, Response] {
       req => {
-        assert(req.serviceIdOpt == Some(one))
-        assert(req.sessionIdOpt == Some(sessionId))
+        assert(req.serviceIdOpt.contains(one))
+        assert(req.sessionIdOpt.contains(sessionId))
         Future.value(Response(Status.Ok))
       }
     }
@@ -171,7 +211,7 @@ class BorderAuthSpec extends BorderPatrolSuite {
     val testService = Service.mk[SessionIdRequest, Response] {
       req => {
         assert(req.serviceIdOpt.isEmpty)
-        assert(req.sessionIdOpt == Some(sessionId))
+        assert(req.sessionIdOpt.contains(sessionId))
         Future.value(Response(Status.Ok))
       }
     }
@@ -191,7 +231,7 @@ class BorderAuthSpec extends BorderPatrolSuite {
     //  test service
     val testService = Service.mk[SessionIdRequest, Response] {
       req => {
-        assert(req.serviceIdOpt == Some(one))
+        assert(req.serviceIdOpt.contains(one))
         assert(req.sessionIdOpt.isEmpty)
         Future.value(Response(Status.Ok))
       }
@@ -525,6 +565,27 @@ class BorderAuthSpec extends BorderPatrolSuite {
       testService)(SessionIdRequest(request, cust1, Some(one), None))
 
     //  Validate
+    output.results.status should be(Status.Ok)
+  }
+
+  it should "send the request w/ authenticated SessionId to loginConfirm path to IdentityService chain" in {
+    val identityProvider = Service.mk[BorderRequest, Response] { _ => Response(Status.Ok).toFuture }
+    val identityProviderMap = Map("test1.type" -> identityProvider)
+    val testService = Service.mk[SessionIdRequest, Response] { _ => fail("Must not invoke this service")}
+
+    // Allocate and Session
+    val sessionId = sessionid.authenticated
+    val cooki = sessionId.asCookie()
+
+    // Login POST request
+    val request = reqPost("enterprise", cust1.loginManager.loginConfirm.toString, Buf.Empty)
+    request.addCookie(cooki)
+
+    // Execute
+    val output = (SendToIdentityProvider(identityProviderMap, sessionStore) andThen
+      testService)(SessionIdRequest(request, cust1, Some(one), Some(sessionId)))
+
+    // Validate
     Await.result(output).status should be(Status.Ok)
   }
 
@@ -540,7 +601,7 @@ class BorderAuthSpec extends BorderPatrolSuite {
     val cooki = sessionId.asCookie()
 
     // Login POST request
-    val request = reqPost("enterprise", cust1.loginManager.loginConfirm.toString, Buf.Empty)
+    val request = reqPost("enterprise", one.path.toString, Buf.Empty)
     request.addCookie(cooki)
 
     // Execute

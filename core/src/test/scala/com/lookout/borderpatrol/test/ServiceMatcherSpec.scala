@@ -7,11 +7,11 @@ import com.twitter.finagle.http.path.Path
 class ServiceMatcherSpec extends BorderPatrolSuite {
   import coreTestHelpers._
 
-  val sOneOne = ServiceIdentifier("eOne", urls, Path("/ent1"), None, true)
-  val sOneTwo = ServiceIdentifier("eTwo", urls, Path("/ent2"), None, true)
-  val sTwo = ServiceIdentifier("two", urls, Path("/api"), None, true)
-  val sThree = ServiceIdentifier("three", urls, Path("/apis"), None, true)
-  val sFour = ServiceIdentifier("four", urls, Path("/apis/test"), None, true)
+  val sOneOne = ServiceIdentifier("eOne", urls, Path("/ent1"), None, Set.empty)
+  val sOneTwo = ServiceIdentifier("eTwo", urls, Path("/ent2"), None, Set.empty)
+  val sTwo = ServiceIdentifier("two", urls, Path("/api"), None, Set.empty)
+  val sThree = ServiceIdentifier("three", urls, Path("/apis"), None, Set.empty)
+  val sFour = ServiceIdentifier("four", urls, Path("/apis/test"), None, Set.empty)
   val serviceIds = Set(sOneOne, sOneTwo, sTwo, sThree, sFour)
   val cOne = CustomerIdentifier("enterprise", "c1-guid", sOneOne, test1LoginManager)
   val cTwo = CustomerIdentifier("api", "c2-guid", two, test2LoginManager)

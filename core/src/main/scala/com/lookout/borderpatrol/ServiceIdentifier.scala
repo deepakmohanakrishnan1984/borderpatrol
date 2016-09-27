@@ -13,12 +13,16 @@ import com.twitter.finagle.http.path.Path
  * @param path The external url path prefix that routes to the internal service
  * @param rewritePath The (optional) internal url path prefix to the internal service. If present,
  *                    it replaces the external path in the Request URI
- * @param protekted The service is protected or unprotected (i.e. does not go through access issuer)
+ * @param unprotectedPaths The list of unprotected/unauthenticated paths (i.e. does not go through access issuer)
+ *                         anchored on the "path"
  */
 case class ServiceIdentifier(name: String, hosts: Set[URL], path: Path, rewritePath: Option[Path],
-                             protekted: Boolean) {
-  def isServicePath(p: Path): Boolean =
-    p.startsWith(path)
+                             unprotectedPaths: Set[Path]) {
+  def isServicePath(p: Path): Boolean = p.startsWith(path)
+  def isUnprotected(s: String): Boolean = unprotectedPaths.exists { p =>
+    val components = path.toList ++ p.toList
+    (Path(s).toList take components.length) == components
+  }
   lazy val endpoint: Endpoint = SimpleEndpoint(name, path, hosts)
 }
 

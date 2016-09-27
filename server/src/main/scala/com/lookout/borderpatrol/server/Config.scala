@@ -89,7 +89,7 @@ object Config {
       ("hosts", sid.hosts.asJson),
       ("path", sid.path.asJson),
       ("rewritePath", sid.rewritePath.asJson),
-      ("protected", sid.protekted.asJson)))
+      ("unprotectedPaths", sid.unprotectedPaths.asJson)))
   }
   implicit val decodeServiceIdentifier: Decoder[ServiceIdentifier] =
     Decoder.instance { c =>
@@ -98,8 +98,8 @@ object Config {
         hosts <- c.downField("hosts").as[Set[URL]]
         path <- c.downField("path").as[Path]
         rewritePathOption <- c.downField("rewritePath").as[Option[Path]]
-        protectedOption <- c.downField("protected").as[Option[Boolean]]
-      } yield ServiceIdentifier(name, hosts, path, rewritePathOption, protectedOption.getOrElse(true))
+        unprotectedPaths <- c.downField("unprotectedPaths").as[Option[Set[Path]]]
+      } yield ServiceIdentifier(name, hosts, path, rewritePathOption, unprotectedPaths.getOrElse(Set.empty[Path]))
     }
 
   // Encoder/Decoder for CustomerIdentifier

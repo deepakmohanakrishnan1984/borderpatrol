@@ -62,7 +62,7 @@ case class AccessLogFilter(logDestination: String, fileSizeInMegaBytes: Long, fi
         /* IP Address */
         s"${requestIPAddress}\t"+
           /* Start Time */
-          s"${startTime.format("[yyyy/MM/dd:hh:mm:ss.sss]")}\t"+
+          s"${startTime.format("[yyyy/MM/dd:hh:mm:ss.SSS]")}\t"+
           /* Reuest Method (GET/POST) */
           s"${requestMethod}\t"+
           /* Request Host */

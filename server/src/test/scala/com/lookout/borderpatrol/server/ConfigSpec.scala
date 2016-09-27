@@ -1,7 +1,6 @@
 package com.lookout.borderpatrol.server
 
 import java.net.URL
-
 import com.google.common.net.InternetDomainName
 import com.lookout.borderpatrol.auth.tokenmaster._
 import com.lookout.borderpatrol.auth.tokenmaster.LoginManagers._
@@ -11,14 +10,14 @@ import com.lookout.borderpatrol.sessionx._
 import com.lookout.borderpatrol.test._
 import com.lookout.borderpatrol._
 import com.twitter.finagle.memcached
-import com.twitter.finagle.http.path.Path
+import com.twitter.finagle.http.path.{Path, Root}
 import cats.data.Xor
 import io.circe._
 import io.circe.jawn._
 import io.circe.generic.auto._
 import io.circe.syntax._
-
 import scala.reflect.io.File
+
 
 class ConfigSpec extends BorderPatrolSuite {
   import coreTestHelpers._
@@ -158,8 +157,8 @@ class ConfigSpec extends BorderPatrolSuite {
 
   it should "return a Set with errors if duplicate paths are configured in serviceIdentifiers config" in {
     val output = validateServiceIdentifierConfig("serviceIdentifiers",
-      sids + ServiceIdentifier("some", urls, Path("/ent"), None, false)
-        + ServiceIdentifier("some", urls, Path("/some"), None, false))
+      sids + ServiceIdentifier("some", urls, Path("/ent"), None, Set.empty)
+        + ServiceIdentifier("some", urls, Path("/some"), None, Set(Root)))
     output should contain ("Duplicate entries for key (path) are found in the field: serviceIdentifiers")
   }
 

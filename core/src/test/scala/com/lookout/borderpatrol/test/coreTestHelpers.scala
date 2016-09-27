@@ -84,12 +84,12 @@ object coreTestHelpers {
     test2LoginManager.asInstanceOf[LoginManager])
 
   // sids
-  val one = ServiceIdentifier("one", urls, Path("/ent"), None, true)
-  val oneTwo = ServiceIdentifier("oneTwo", urls, Path("/ent2"), None, true)
-  val two = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("/broken/umb")), true)
-  val three = ServiceIdentifier("three", urls, Path("/rain"), None, true)
-  val unproCheckpointSid = ServiceIdentifier("login", urls, Path("/check"), None, false)
-  val proCheckpointSid = ServiceIdentifier("checkpoint", urls, Path("/check/that"), None, true)
+  val one = ServiceIdentifier("one", urls, Path("/ent"), None, Set.empty)
+  val oneTwo = ServiceIdentifier("oneTwo", urls, Path("/ent2"), None, Set.empty)
+  val two = ServiceIdentifier("two", urls, Path("/umb"), Some(Path("/broken/umb")), Set.empty)
+  val three = ServiceIdentifier("three", urls, Path("/rain"), None, Set.empty)
+  val unproCheckpointSid = ServiceIdentifier("login", urls, Path("/check"), None, Set(Path("/")))
+  val proCheckpointSid = ServiceIdentifier("checkpoint", urls, Path("/check/that"), None, Set.empty)
 
   // cids
   val cust1 = CustomerIdentifier("enterprise", "cust1-guid", one, test1LoginManager)

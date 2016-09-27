@@ -15,7 +15,6 @@ import com.twitter.util.Future
 import io.circe.Json
 import io.circe.syntax._
 import org.jboss.netty.handler.codec.http.QueryStringDecoder
-
 import scala.util.{Failure, Success, Try}
 
 
@@ -33,8 +32,8 @@ object SessionIdRequest {
 case class BorderRequest(req: Request, customerId: CustomerIdentifier, serviceId: ServiceIdentifier,
                          sessionId: SignedId)
 object BorderRequest {
-  def apply(br: SessionIdRequest, serviceId: ServiceIdentifier, sessionId: SignedId): BorderRequest =
-    BorderRequest(br.req, br.customerId, serviceId, sessionId)
+  def apply(sr: SessionIdRequest, serviceId: ServiceIdentifier, sessionId: SignedId): BorderRequest =
+    BorderRequest(sr.req, sr.customerId, serviceId, sessionId)
 }
 case class AccessIdRequest[A](req: Request, customerId: CustomerIdentifier, serviceId: ServiceIdentifier,
                               sessionId: SignedId, id: Id[A])
@@ -129,6 +128,20 @@ object BorderAuth {
       a <- destinationValidator.checkHosts(loc)
     } yield a
 
+  /**
+    * Allocate new session, store the request in cache and return the signedId
+    *
+    * @param req
+    * @param store
+    * @return
+    */
+  def allocateUntaggedSession(req: Request, store: SessionStore)
+                             (implicit secretStore: SecretStoreApi): Future[SignedId] = {
+    for {
+      session <- Session(req)
+      _ <- store.update(session)
+    } yield session.id
+  }
 }
 
 /**
@@ -216,19 +229,14 @@ case class SendToIdentityProvider(identityProviderMap: Map[String, Service[Borde
   }
 
   /**
-   * Generate a redirect error
-   */
+    * Redirect to login page
+    */
   def redirectToLogin(req: SessionIdRequest, sessionIdOpt: Option[SignedId]): Future[Response] = {
     for {
       location <- req.customerId.loginManager.redirectLocation(req.req).toFuture
       sessionId <- sessionIdOpt match {
         case Some(sessionId) => sessionId.toFuture
-        case None =>
-          /** Allocate a new sessionId */
-          for {
-            session <- Session(req.req)
-            _ <- store.update(session)
-          } yield session.id
+        case None => BorderAuth.allocateUntaggedSession(req.req, store)
       }
     } yield {
       statLoginRedirects.incr()
@@ -237,6 +245,24 @@ case class SendToIdentityProvider(identityProviderMap: Map[String, Service[Borde
           s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
           s"to login service, location: ${location.split('?').headOption}")
     }
+  }
+
+  /**
+    * Allocate a new session and send to identity provider
+    */
+  def allocSessionIdAndSendToIdentityProvider(req: SessionIdRequest): Future[Response] = {
+    val location = BorderAuth.extractDestination(req.req.params)(destinationValidator) match {
+      case Some(s) => s
+      case _ => {
+        log.info(s"Could not determine value for query param 'destination': ${req.req.params.get("destination")} " +
+          s"while processing the signin request, using default")
+        req.customerId.defaultServiceId.path.toString
+      }
+    }
+    for {
+      sessionId <- BorderAuth.allocateUntaggedSession(Request(location), store)
+      resp <- sendToIdentityProvider(BorderRequest(req, req.customerId.defaultServiceId, sessionId))
+    } yield resp
   }
 
   def apply(req: SessionIdRequest, service: Service[SessionIdRequest, Response]): Future[Response] = {
@@ -249,36 +275,35 @@ case class SendToIdentityProvider(identityProviderMap: Map[String, Service[Borde
       }
 
       /**
-       * 2. POST to loginConfirm path w/o SessionId, allocate SessionId, dispatch to Identity Provider chain
-       *    It creates default request on the fly and for location it uses defaultServiceId or destination param
-       */
-      case (None, _)
+        * 2. loginConfirm path w/ Authenticated SessionId, dispatch to Identity Provider chain.
+        *    Not very intuitive, but apparently there are cases (automated scripts) wants to authenticate
+        *    an authenticated session
+        */
+      case (Some(AuthenticatedTag), _)
         if Path(req.req.path).startsWith(req.customerId.loginManager.loginConfirm) => {
-        val location = BorderAuth.extractDestination(req.req.params)(destinationValidator) match {
-          case Some(s) => s
-          case _ => {
-            log.info("Could not determine host: "+req.req.params.get("destination")+" using default")
-            req.customerId.defaultServiceId.path.toString
-          }
-        }
-        for {
-          sessionId <- SignedId.untagged
-          session <- Session(sessionId, Request(location)).toFuture
-          _ <- store.update(session)
-          resp <- sendToIdentityProvider(BorderRequest(req, req.customerId.defaultServiceId, sessionId))
-        } yield resp
+        sendToIdentityProvider(BorderRequest(req, req.customerId.defaultServiceId, req.sessionIdOpt.get))
       }
 
-      /* 3. Request w/ untagged SessionId, protected Service, redirect it to Login */
-      case (Some(Untagged), Some(serviceId)) if serviceId.protekted => redirectToLogin(req, req.sessionIdOpt)
+      /**
+        * 3. POST to loginConfirm path w/o SessionId, allocate SessionId, dispatch to Identity Provider chain
+        *    It creates default request on the fly and for location it uses defaultServiceId or destination param
+        */
+      case (None, _)
+        if Path(req.req.path).startsWith(req.customerId.loginManager.loginConfirm) => {
+        allocSessionIdAndSendToIdentityProvider(req)
+      }
 
-      /* 4. Request w/ untagged SessionId, no Service, redirect it to Login */
+      /* 4. Request w/ untagged SessionId, protected path on Service, redirect it to Login */
+      case (Some(Untagged), Some(serviceId)) if !serviceId.isUnprotected(req.req.path) =>
+        redirectToLogin(req, req.sessionIdOpt)
+
+      /* 5. Request w/ untagged SessionId, no Service, redirect it to Login */
       case (Some(Untagged), None) => redirectToLogin(req, req.sessionIdOpt)
 
-      /* 5. Request w/o SessionId, protected Service, redirect it to Login */
-      case (None, Some(serviceId)) if serviceId.protekted => redirectToLogin(req, None)
+      /* 6. Request w/o SessionId, protected path on Service, redirect it to Login */
+      case (None, Some(serviceId)) if !serviceId.isUnprotected(req.req.path) => redirectToLogin(req, None)
 
-      /* 5. Request w/o SessionId, no Service, redirect it to Login */
+      /* 7. Request w/o SessionId, no Service, redirect it to Login */
       case (None, None) => redirectToLogin(req, None)
 
       /* Everything else */
@@ -305,7 +330,13 @@ case class SendToAccessIssuer(accessIssuerMap: Map[String, Service[BorderRequest
       s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
       s"to access issuer chain for service: ${req.serviceId.name}")
     accessIssuerMap.get(req.customerId.loginManager.tyfe) match {
-      case Some(ip) => statAccessIssuer.incr(); ip(req)
+      case Some(ai) => statAccessIssuer.incr(); ai(req).map { resp =>
+        log.debug(s"For a ${req.req} with SessionId: ${req.sessionId.toLogIdString}, " +
+          s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
+          s"the upstream service (protected path) responded with " +
+          s"Response(${resp.status} ContentLength(${resp.contentLength.getOrElse(0)}))")
+        resp
+      }
       case None => Future.exception(BpAccessIssuerError(
         s"Failed to find AccessIssuer Service Chain for loginManager type: ${req.customerId.loginManager.tyfe}, " +
           s"SessionId: ${req.sessionId.toLogIdString}, " +
@@ -316,8 +347,8 @@ case class SendToAccessIssuer(accessIssuerMap: Map[String, Service[BorderRequest
   def apply(req: SessionIdRequest, service: Service[SessionIdRequest, Response]): Future[Response] = {
     (req.sessionIdOpt.map(_.tag), req.serviceIdOpt) match {
 
-      /* 1. Request for protected service w/ authenticated Sessionid, dispatch via accessIssuer chain */
-      case (Some(AuthenticatedTag), Some(serviceId)) if serviceId.protekted =>
+      /* 1. Request to protected path w/ authenticated Sessionid, dispatch via accessIssuer chain */
+      case (Some(AuthenticatedTag), Some(serviceId)) if !serviceId.isUnprotected(req.req.path) =>
         sendToAccessIssuer(BorderRequest(req, serviceId, req.sessionIdOpt.get))
 
       /* 2. Request for Root w/ authenticated Sessionid, redirect to default service */
@@ -335,10 +366,10 @@ case class SendToAccessIssuer(accessIssuerMap: Map[String, Service[BorderRequest
 }
 
 /**
- * Send the request to Unprotected Service
+ * Send the request to Unprotected path on upstream Service
  *
- * This filter only deals with the Request has SessionId (Authenticate or Untagged) and destined to unprotected
- * Service. Everything else is forwarded to the next filter in the chain.
+ * This filter only deals with the Request has SessionId (Authenticate or Untagged) and destined to unprotected path.
+ * Everything else is forwarded to the next filter in the chain.
  *
  * @param store
  * @param secretStore
@@ -354,26 +385,30 @@ case class SendToUnprotectedService(store: SessionStore)
     statRequestSends.incr
     log.debug(s"Send: Request(${req.req.method} ${req.req.path}) with SessionId: ${req.sessionId.toLogIdString}, " +
       s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
-      s"to the unprotected upstream service: ${req.serviceId.name}")
+      s"to the unprotected path on upstream service: ${req.serviceId.name}")
     /* Rewrite Path and send to upstream */
-    req.serviceId.endpoint.send(BorderAuth.rewriteRequest(req.req, req.serviceId))
+    req.serviceId.endpoint.send(BorderAuth.rewriteRequest(req.req, req.serviceId)).map {resp =>
+      log.debug(s"For a ${req.req} with SessionId: ${req.sessionId.toLogIdString}, " +
+        s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
+        s"the upstream service (unprotected path) responded with " +
+        s"Response(${resp.status} ContentLength(${resp.contentLength.getOrElse(0)}))")
+      resp
+    }
   }
 
   def apply(req: SessionIdRequest, service: Service[SessionIdRequest, Response]): Future[Response] =
     (req.sessionIdOpt, req.serviceIdOpt) match {
 
-      /* 1. Request w/ SessionId, dispatch to unprotected service */
-      case (Some(sessionId), Some(serviceId)) if !serviceId.protekted =>
+      /* 1. Request w/ SessionId, dispatch to unprotected path on upstream service */
+      case (Some(sessionId), Some(serviceId)) if serviceId.isUnprotected(req.req.path) =>
         sendToUnprotectedService(BorderRequest(req, serviceId, sessionId))
 
-      /* 1. Request w/o SessionId, dispatch to unprotected service */
-      case (None, Some(serviceId)) if !serviceId.protekted =>
+      /* 1. Request w/o SessionId, dispatch to unprotected path on upstream service */
+      case (None, Some(serviceId)) if serviceId.isUnprotected(req.req.path) =>
         for {
-          sessionId <- SignedId.untagged
-          session <- Session(sessionId, Request(req.customerId.defaultServiceId.path.toString)).toFuture
-          _ <- store.update(session)
+          sessionId <- BorderAuth.allocateUntaggedSession(Request(req.customerId.defaultServiceId.path.toString), store)
           resp <- sendToUnprotectedService(BorderRequest(req, serviceId, sessionId))
-          _ <- (resp.addCookie(sessionId.asCookie())).toFuture
+          _ <- resp.addCookie(sessionId.asCookie()).toFuture
         } yield resp
 
       /* Everything else */
@@ -437,16 +472,13 @@ case class IdentityFilter[A : SessionDataEncoder](store: SessionStore)(
   def apply(req: BorderRequest, service: Service[AccessIdRequest[A], Response]): Future[Response] = {
     identity(req.sessionId).flatMap {
       case id: Id[A] => service(AccessIdRequest(req, id))
-      case EmptyIdentity => for {
-        session <- Session(req.req)
-        _ <- store.update(session)
-      } yield {
+      case EmptyIdentity => BorderAuth.allocateUntaggedSession(req.req, store).map { sessionId =>
         val location = req.customerId.loginManager.redirectLocation(req.req)
-        BorderAuth.formatRedirectResponse(req.req, Status.Unauthorized, location, Some(session.id),
+        BorderAuth.formatRedirectResponse(req.req, Status.Unauthorized, location, Some(sessionId),
           s"Failed to find SessionId: ${req.sessionId.toLogIdString}, " +
             s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
             s" for: ${req.req}, " +
-            s"allocating a new SessionId: ${session.id.toLogIdString}, " +
+            s"allocating a new SessionId: ${sessionId.toLogIdString}, " +
             s"redirecting to location: ${location.split('?').headOption}")
       }
     }
@@ -471,7 +503,7 @@ case class AccessFilter[A, B](implicit statsReceiver: StatsReceiver)
           statRequestSends.incr
           log.debug(s"Send: ${r} with SessionId: ${req.sessionId.toLogIdString}, " +
             s"IPAddress: '${req.req.xForwardedFor.getOrElse("No IP Address")}', " +
-            s"to the protected upstream service: ${req.serviceId.name}")
+            s"to the protected path on upstream service: ${req.serviceId.name}")
           r.headerMap.add("Auth-Token", accessResp.access.access.toString)
         }
       )
@@ -532,13 +564,7 @@ case class OptionsFilter(store: SessionStore)(implicit secretStore: SecretStoreA
     req.req.method match {
       case Method.Options => {
         for {
-          sessionId <- req.sessionIdOpt.fold {
-              /** Allocate a new sessionId */
-              for {
-                session <- Session(req.req)
-                _ <- store.update(session)
-              } yield session.id
-            }(_.toFuture)
+          sessionId <- req.sessionIdOpt.fold(BorderAuth.allocateUntaggedSession(req.req, store))(_.toFuture)
           resp <- tap(Response()) { r =>
             r.status = req.serviceIdOpt.fold(Status.MethodNotAllowed)(_ => Status.Ok)
             r.addCookie(sessionId.asCookie())

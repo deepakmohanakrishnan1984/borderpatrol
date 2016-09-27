@@ -89,7 +89,9 @@
     {
       "hosts": ["http://localhost:8081"],
       "path": "/z",
-      "protected": false,
+      "unprotectedPaths": [
+        "/"
+      ],
       "name": "login"
     }
   ],
